@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    #video {
+      width: 640px;
+      height: 480px;
+      border: 2px solid black;
+    }
+    #dashboard {
+      margin-top: 20px;
+    }
+    .status {
+      font-size: 1.2em;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Dashboard de Qualidade</h1>
+  <video id="video" autoplay playsinline></video>
+  <div id="dashboard">
+    <h2>Status Atual:</h2>
+    <p class="status" id="status">Carregando...</p>
+  </div>
+  <canvas id="grafico"></canvas> <!-- Canvas do gráfico -->
+
+  <!-- Bibliotecas -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script> 
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js";
+    import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-analytics.js";
+    import { getFirestore, collection, getDocs, addDoc } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-firestore.js";
+    
+// Configuração do Firebase - credenciais
+const firebaseConfig = {
+    apiKey: "AIzaSyAZ7LBv-lRCB40zRSYVVimaFHXl07gNjvY",
+    authDomain: "qualidadeproducao-3372b.firebaseapp.com",
+    projectId: "qualidadeproducao-3372b",
+    storageBucket: "qualidadeproducao-3372b.firebasestorage.app",
+    messagingSenderId: "315969497868",
+    appId: "1:315969497868:web:63a980a1818588df05f729",
+    measurementId: "G-ENF0X231L7"
+  };
+    
+  // Inicialização do Firebase
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
+  const db = getFirestore(app); // Inicialização do Firestore
+  
+  // Obter Elementos da interface
+  const video = document.getElementById('video');
+  const statusElement = document.getElementById('status');  
+  const ctx = document.getElementById("grafico").getContext("2d"); // Canvas do gráfico
+  
+  // Variável para armazenar o gráfico
+  let grafico;   
+  // Carregar o modelo do Teachable Machine
+  let model;
+  
+  async function loadModel() {
+    try {
+      model = await tf.loadLayersModel('model/model.json'); // Certifique-se de que o caminho está correto
+      console.log("Modelo carregado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao carregar o modelo:", error);
+    }
+  }
+
+  // Função para atualizar os dados e o gráfico
+  function atualizarDados() {
+            
+            // Obter os dados da coleção "tvs"
+            getDocs(collection(db, "qualidade_producao")).then((querySnapshot) => {
+                let timestamp = [];
+                let defeitos_detectados = [];
+                let status = [];
+
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    timestamp.push(data.timestamp);
+                    defeitos_detectados.push(data.defeitos_detectados);
+                    status.push(data.status);                    
+                });
+
+                // Atualiza o gráfico
+                atualizarGrafico(timestamp, defeitos_detectados, status);
+            }).catch((error) => {
+                console.error("Erro ao carregar os dados: ", error);
+            });
+        }
+
+  // Função para atualizar o gráfico com novos dados
+  function atualizarGrafico(timestamp, defeitos_detectados, status) {
+            if (grafico) {
+                grafico.destroy(); // Remove o gráfico anterior para evitar sobreposição
+            }
+
+            grafico = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: timestamp,
+                    datasets: [
+                        {
+                            label: "defeitos_detectados",
+                            data: defeitos_detectados,
+                            backgroundColor: "rgba(75, 192, 192, 0.7)",
+                            borderColor: "rgba(75, 192, 192, 1)",
+                            borderWidth: 1
+                        },
+                        {
+                            label: "status",
+                            data: status,
+                            backgroundColor: "rgba(255, 99, 132, 0.7)",
+                            borderColor: "rgba(255, 99, 132, 1)",
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+  
+  // Função para capturar frames e fazer previsões
+  async function detectDefects() {
+  if (!model) return;
+
+  setInterval(async () => {
+    try {
+      // Capturar frame da webcam
+      const image = tf.browser.fromPixels(video);
+      const resized = tf.image.resizeBilinear(image, [224, 224]); // Redimensionar para o tamanho esperado pelo modelo
+      const normalized = resized.div(255.0); // Normalizar os valores dos pixels
+      const batched = normalized.expandDims(0); // Adicionar dimensão de batch
+
+      // Fazer previsão
+      const prediction = model.predict(batched);
+      const result = await prediction.data(); // Obter as probabilidades das classes
+
+      // Interpretar o resultado
+        const hasDefect = result[1] > 0.5; // Supondo que a classe "Com Defeito" seja a segunda classe
+        const status = hasDefect ? "Alerta: Defeito Detectado" : "OK: Sem Defeitos";
+        statusElement.textContent = status;
+        
+        // Referência à coleção "tvs" no Firestore
+        const tvsCollection = collection(db, "qualidade_producao");
+
+        // Adicionar os dados ao Firestore
+        addDoc(tvsCollection, {
+            timestamp: new Date().toISOString(),
+            defeitos_detectados: hasDefect ? 1 : 0,
+            status: status
+        }).then(() => {
+            console.log("Dados enviados ao Firestore");
+        
+        }).catch((error) => {
+            console.error("Erro ao salvar os dados: ", error);
+        });
+      
+    } catch (error) {
+      console.error("Erro ao processar frame:", error);
+    }
+    atualizarDados();
+  }, 10000); // Processar um frame por segundo
+}
+  // Iniciar a webcam
+  async function startWebcam() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      video.play();
+      await loadModel(); // Carregar o modelo após iniciar a webcam
+      detectDefects(); // Começar a detecção de defeitos
+    } catch (error) {
+      console.error("Erro ao acessar a webcam:", error);
+    }
+  }
+  
+  // Iniciar o sistema
+  startWebcam();
+
+</script>
+  
+</body>
+</html>
